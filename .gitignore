@@ -1,0 +1,12 @@
+node_modules/*
+.next/*
+apps/web/node_modules/*
+apps/web/next/*
+apps/web/.env
+apps/web/.env.local
+apps/web/.env.development.local
+apps/web/.env.test.local
+apps/web/.env.production.local
+apps/web/.next/*
+cache/*
+.env

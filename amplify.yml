@@ -1,0 +1,28 @@
+version: 1
+applications:
+  - appRoot: .
+    frontend:
+      phases:
+        preBuild:
+          commands:
+            - nvm install 20
+            - nvm use 20
+            - npm ci
+        build:
+          commands:
+            - npm run build
+      artifacts:
+        baseDirectory: .next
+        files:
+          - '**/*'
+      cache:
+        paths:
+          - node_modules/**/*
+          - .next/cache/**/*
+    environment:
+      variables:
+        NEXT_TELEMETRY_DISABLED: "1"
+        NODE_VERSION: "20"
+        AWS_LAMBDA_JS_RUNTIME: "nodejs20.x"
+
+

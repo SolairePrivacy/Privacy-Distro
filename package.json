@@ -1,0 +1,33 @@
+{
+  "name": "web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start -p ${PORT:-3000}",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "autoprefixer": "^10.4.19",
+    "next": "^16.0.0",
+    "postcss": "^8.4.47",
+    "@solana/web3.js": "^1.98.4",
+    "bs58": "^6.0.0",
+    "privacycash": "^1.0.15",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "tailwindcss": "^3.4.13",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.11",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@types/ws": "^8.5.10",
+    "eslint": "^9.39.1",
+    "eslint-config-next": "^16.0.0",
+    "typescript": "^5.6.3"
+  }
+}
