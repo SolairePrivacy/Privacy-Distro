@@ -4,94 +4,32 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Connection, Keypair, LAMPORTS_PER_SOL, PublicKey, SystemProgram, Transaction } from '@solana/web3.js';
 import bs58 from 'bs58';
 
-type Recipient = { id: string; address: string; amount: number };
-type ActivityEntry = { id: string; headline: string; detail: string; timestamp: number };
-type LogEntry = { id: string; scope: string; message: string; timestamp: number };
-type FlashEntry = { id: string; tone: 'positive' | 'negative'; message: string };
-
-type PhantomEvent = 'connect' | 'disconnect' | 'accountChanged';
-type PhantomEventHandler = (args: unknown) => void;
-type PhantomProvider = {
-  isPhantom?: boolean;
-  publicKey?: { toBase58(): string };
-  connect(opts?: { onlyIfTrusted?: boolean }): Promise<{ publicKey: { toBase58(): string } }>;
-  disconnect(): Promise<void>;
-  signAndSendTransaction(transaction: Transaction): Promise<{ signature: string }>;
-  on?(event: PhantomEvent, handler: PhantomEventHandler): void;
-  off?(event: PhantomEvent, handler: PhantomEventHandler): void;
-};
+import { callPrivacyCashApi } from './features/dashboard/api';
+import { DEFAULT_RPC, FEE_BUFFER_LAMPORTS, WALLET_STORAGE_KEY } from './features/dashboard/constants';
+import type {
+  ActivityEntry,
+  BalanceApiResponse,
+  DepositApiResponse,
+  FlashEntry,
+  LogEntry,
+  PhantomProvider,
+  Recipient,
+  WithdrawApiResponse,
+} from './features/dashboard/types';
+import { createId, formatShort, formatSol, shortenAddress, toAddressString } from './features/dashboard/utils';
+import { FlashBanner } from './features/dashboard/components/FlashBanner';
+import { WalletOverview } from './features/dashboard/components/WalletOverview';
+import { BalanceSummary } from './features/dashboard/components/BalanceSummary';
+import { DepositForm } from './features/dashboard/components/DepositForm';
+import { PayoutBuilder } from './features/dashboard/components/PayoutBuilder';
+import { ActivityList } from './features/dashboard/components/ActivityList';
+import { LogList } from './features/dashboard/components/LogList';
 
 declare global {
   interface Window {
     phantom?: { solana?: PhantomProvider };
     solana?: PhantomProvider;
   }
-}
-
-type DepositApiResponse = { action: 'deposit'; tx: string; balanceLamports: number };
-type WithdrawApiItem = { tx: string; recipient: string; lamports: number; feeLamports: number; isPartial: boolean };
-type WithdrawApiResponse = { action: 'withdraw'; items: WithdrawApiItem[]; balanceLamports: number };
-type BalanceApiResponse = { action: 'balance'; balanceLamports: number };
-
-const DEFAULT_RPC = process.env.NEXT_PUBLIC_SOLANA_RPC_URL ?? 'https://api.mainnet-beta.solana.com';
-const WALLET_STORAGE_KEY = 'private-pumper.wallet';
-const FEE_BUFFER_LAMPORTS = 6_900_000;
-
-function createId() {
-  return Math.random().toString(36).slice(2);
-}
-
-function formatSol(lamports: number) {
-  return `${(lamports / LAMPORTS_PER_SOL).toLocaleString('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 4 })} SOL`;
-}
-
-function formatShort(value: number) {
-  return value.toLocaleString('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 4 });
-}
-
-function toAddressString(value: unknown): string | null {
-  if (!value) {
-    return null;
-  }
-  if (typeof value === 'string') {
-    return value;
-  }
-  if (typeof (value as { toBase58?: () => string }).toBase58 === 'function') {
-    return (value as { toBase58(): string }).toBase58();
-  }
-  return null;
-}
-
-function shortenAddress(value: string) {
-  if (value.length <= 8) {
-    return value;
-  }
-  return `${value.slice(0, 4)}…${value.slice(-4)}`;
-}
-
-async function callApi<T>(payload: Record<string, unknown>) {
-  const response = await fetch('/api/private-cash', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(payload),
-  }).catch(() => {
-    throw new Error('Failed to reach the relay.');
-  });
-
-  let json: unknown;
-  try {
-    json = await response.json();
-  } catch {
-    throw new Error('Relay returned an invalid response.');
-  }
-
-  if (!response.ok) {
-    const message = typeof (json as { error?: unknown })?.error === 'string' ? (json as { error: string }).error : 'Relay request failed.';
-    throw new Error(message);
-  }
-  return json as T;
 }
 
 export default function Home() {
@@ -259,6 +197,8 @@ export default function Home() {
 
   const currentBalanceDisplay = formatSol(balanceLamports);
   const queuedSolDisplay = formatShort(totalQueuedLamports / LAMPORTS_PER_SOL);
+  const canRefreshBalance = Boolean(ownerSecret);
+  const canDeposit = Boolean(ownerSecret && publicAddress);
 
   const rpcUrl = DEFAULT_RPC;
 
@@ -269,7 +209,7 @@ export default function Home() {
       }
       setIsFetchingBalance(true);
       try {
-        const data = await callApi<BalanceApiResponse>({ action: 'balance', rpcUrl, owner: ownerSecret });
+        const data = await callPrivacyCashApi<BalanceApiResponse>({ action: 'balance', rpcUrl, owner: ownerSecret });
         setBalanceLamports(data.balanceLamports);
         setLastSyncedAt(Date.now());
         if (!silent) {
@@ -394,7 +334,7 @@ export default function Home() {
       if (!settled) {
         pushLog('deposit', 'Deposit wallet balance not yet reflecting transfer; retrying anyway.');
       }
-      const data = await callApi<DepositApiResponse>({ action: 'deposit', rpcUrl, owner: ownerSecret, lamports });
+      const data = await callPrivacyCashApi<DepositApiResponse>({ action: 'deposit', rpcUrl, owner: ownerSecret, lamports });
       setBalanceLamports(data.balanceLamports);
       setLastSyncedAt(Date.now());
       setActivity((existing) => [
@@ -449,7 +389,7 @@ export default function Home() {
     setIsWithdrawing(true);
     pushLog('withdraw', `Submitting ${payload.length} payout${payload.length === 1 ? '' : 's'}.`);
     try {
-      const data = await callApi<WithdrawApiResponse>({ action: 'withdraw', rpcUrl, owner: ownerSecret, payouts: payload });
+      const data = await callPrivacyCashApi<WithdrawApiResponse>({ action: 'withdraw', rpcUrl, owner: ownerSecret, payouts: payload });
       setBalanceLamports(data.balanceLamports);
       setLastSyncedAt(Date.now());
       setRecipients([]);
@@ -482,161 +422,52 @@ export default function Home() {
           </p>
         </header>
 
-        {flash && (
-          <div
-            className={[
-              'rounded-lg border px-4 py-3 text-sm',
-              flash.tone === 'positive' ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200' : 'border-rose-500/40 bg-rose-500/10 text-rose-200',
-            ].join(' ')}
-          >
-            {flash.message}
-          </div>
-        )}
+        <FlashBanner flash={flash} />
 
         <section className="grid gap-6 lg:grid-cols-[1.45fr_1fr]">
           <div className="space-y-6 rounded-2xl border border-white/5 bg-white/5 p-6 backdrop-blur">
-            <div className="grid gap-4 md:grid-cols-2">
-              <div className="rounded-xl border border-slate-800/70 bg-slate-900/50 p-4 text-sm">
-                <p className="text-xs uppercase text-slate-400">Deposit wallet</p>
-                <p className="mt-2 break-all text-base font-semibold text-slate-100">{publicAddress || 'Loading...'}</p>
-              </div>
-              <div className="rounded-xl border border-slate-800/70 bg-slate-900/50 p-4 text-sm">
-                <p className="text-xs uppercase text-slate-400">Phantom wallet</p>
-                <p className="mt-2 text-base font-semibold text-slate-100">{phantomDisplay}</p>
-                {phantomAddress && <p className="mt-2 break-all text-[11px] text-slate-500">{phantomAddress}</p>}
-                <button className="btn mt-3 w-full" onClick={connectWallet} disabled={isConnectingWallet}>
-                  {isConnectingWallet ? 'Connecting…' : phantomAddress ? 'Reconnect wallet' : 'Connect Phantom'}
-                </button>
-              </div>
-            </div>
+            <WalletOverview
+              depositAddress={publicAddress}
+              phantomDisplay={phantomDisplay}
+              phantomAddress={phantomAddress}
+              isConnecting={isConnectingWallet}
+              onConnectWallet={connectWallet}
+            />
 
-            <div className="flex flex-wrap items-end justify-between gap-6">
-              <div>
-                <span className="text-xs uppercase text-slate-400">Tracked privacy cash balance</span>
-                <p className="mt-2 text-4xl font-semibold">{currentBalanceDisplay}</p>
-              </div>
-              <div className="flex flex-col items-end gap-2 text-right text-xs text-slate-400">
-                <span>Last sync: {lastSyncedAt ? new Date(lastSyncedAt).toLocaleTimeString() : 'Pending'}</span>
-                <button
-                  className="rounded-md border border-slate-700 bg-slate-900 px-3 py-1 text-xs font-semibold text-slate-200 transition hover:border-slate-500 disabled:opacity-50"
-                  onClick={() => refreshBalance(false)}
-                  disabled={isFetchingBalance || !ownerSecret}
-                >
-                  {isFetchingBalance ? 'Refreshing…' : 'Refresh balance'}
-                </button>
-              </div>
-            </div>
+            <BalanceSummary
+              currentBalanceDisplay={currentBalanceDisplay}
+              lastSyncedAt={lastSyncedAt}
+              isFetching={isFetchingBalance}
+              canRefresh={canRefreshBalance}
+              onRefresh={() => refreshBalance(false)}
+            />
 
-            <div className="rounded-xl border border-white/5 bg-slate-900/40 p-5">
-              <div className="grid gap-3 md:grid-cols-[1.2fr_0.8fr_auto] md:items-end">
-                <label className="grid gap-2 text-sm">
-                  <span className="text-slate-400">Deposit amount (SOL)</span>
-                  <input
-                    className="input"
-                    inputMode="decimal"
-                    placeholder="0.00"
-                    value={depositInput}
-                    onChange={(event) => setDepositInput(event.target.value)}
-                    disabled={isDepositing}
-                  />
-                </label>
-                <button
-                  className="btn md:h-12"
-                  onClick={handleDeposit}
-                  disabled={isDepositing || isConnectingWallet || !ownerSecret || !publicAddress}
-                >
-                  {isDepositing ? 'Depositing…' : 'Deposit to Privacy Cash'}
-                </button>
-                <div className="rounded-lg border border-slate-800 bg-slate-900/60 px-4 py-3 text-sm text-slate-400">
-                  Queued payouts: <span className="font-medium text-slate-100">{queuedSolDisplay} SOL</span>
-                </div>
-              </div>
-              <p className="mt-3 text-xs text-slate-500">
-                Each Phantom transfer includes an additional 0.001 SOL buffer so the deposit wallet can pay relayer fees.
-              </p>
-            </div>
+            <DepositForm
+              depositInput={depositInput}
+              onChange={(value) => setDepositInput(value)}
+              onSubmit={handleDeposit}
+              isDepositing={isDepositing}
+              isConnectingWallet={isConnectingWallet}
+              canSubmit={canDeposit}
+              queuedSolDisplay={queuedSolDisplay}
+            />
 
-            <div className="rounded-xl border border-white/5 bg-slate-900/40">
-              <div className="border-b border-white/5 px-5 py-4 text-sm font-medium uppercase tracking-widest text-slate-400">
-                Payout builder
-              </div>
-              <div className="space-y-4 p-5">
-                <div className="grid gap-3 md:grid-cols-[1.7fr_0.8fr_auto]">
-                  <input
-                    className="input"
-                    placeholder="Destination wallet address"
-                    value={recipientAddress}
-                    onChange={(event) => setRecipientAddress(event.target.value)}
-                  />
-                  <input
-                    className="input"
-                    placeholder="Amount (SOL)"
-                    inputMode="decimal"
-                    value={recipientAmount}
-                    onChange={(event) => setRecipientAmount(event.target.value)}
-                  />
-                  <button className="btn md:h-12" onClick={handleAddRecipient}>
-                    Add wallet
-                  </button>
-                </div>
-                <div className="space-y-2">
-                  {recipients.length === 0 && (
-                    <div className="rounded-lg border border-dashed border-slate-800 px-4 py-6 text-center text-sm text-slate-500">
-                      No payouts prepared yet.
-                    </div>
-                  )}
-                  {recipients.map((recipient) => (
-                    <div
-                      key={recipient.id}
-                      className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-800 bg-slate-900/60 px-4 py-3"
-                    >
-                      <div>
-                        <p className="font-medium text-slate-100">{recipient.address}</p>
-                        <span className="text-xs uppercase tracking-wide text-slate-500">{formatShort(recipient.amount)} SOL</span>
-                      </div>
-                      <button
-                        className="rounded-md border border-rose-500/40 px-3 py-1 text-xs font-semibold text-rose-200 transition hover:bg-rose-500/10"
-                        onClick={() => removeRecipient(recipient.id)}
-                      >
-                        Remove
-                      </button>
-                    </div>
-                  ))}
-                </div>
-                <button className="btn w-full" onClick={handlePayout} disabled={isWithdrawing || recipients.length === 0}>
-                  {isWithdrawing ? 'Processing…' : `Send ${recipients.length || ''} ${recipients.length === 1 ? 'payout' : 'payouts'}`}
-                </button>
-              </div>
-            </div>
+            <PayoutBuilder
+              recipientAddress={recipientAddress}
+              onRecipientAddressChange={(value) => setRecipientAddress(value)}
+              recipientAmount={recipientAmount}
+              onRecipientAmountChange={(value) => setRecipientAmount(value)}
+              recipients={recipients}
+              onAddRecipient={handleAddRecipient}
+              onRemoveRecipient={removeRecipient}
+              onSubmit={handlePayout}
+              isProcessing={isWithdrawing}
+            />
           </div>
 
           <aside className="space-y-4">
-            <div className="rounded-2xl border border-white/5 bg-slate-900/40 p-6 backdrop-blur">
-              <h2 className="text-lg font-semibold">Activity</h2>
-              {activity.length === 0 && <p className="mt-2 text-sm text-slate-400">No transactions yet.</p>}
-              <ul className="mt-4 space-y-3">
-                {activity.map((entry) => (
-                  <li key={entry.id} className="rounded-lg border border-slate-800 bg-slate-900/60 px-4 py-3 text-sm">
-                    <p className="font-medium text-slate-100">{entry.headline}</p>
-                    <p className="text-xs text-slate-500">{entry.detail}</p>
-                    <span className="text-xs text-slate-500">{new Date(entry.timestamp).toLocaleString()}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-            <div className="rounded-2xl border border-white/5 bg-slate-900/40 p-6 backdrop-blur max-w-xl w-full">
-              <h2 className="text-lg font-semibold">Relay log</h2>
-              {logs.length === 0 && <p className="mt-2 text-sm text-slate-400">Awaiting activity.</p>}
-              <ul className="mt-4 space-y-3 max-h-64 overflow-y-auto pr-1">
-                {logs.map((entry) => (
-                  <li key={entry.id} className="rounded-lg border border-slate-800 bg-slate-900/60 px-4 py-3 text-xs text-slate-400">
-                    <p className="font-semibold text-slate-200">{entry.scope}</p>
-                    <p className="mt-1 text-slate-300">{entry.message}</p>
-                    <span className="mt-1 block text-[11px]">{new Date(entry.timestamp).toLocaleTimeString()}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
+            <ActivityList entries={activity} />
+            <LogList entries={logs} />
           </aside>
         </section>
       </div>
